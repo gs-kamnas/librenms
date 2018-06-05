@@ -46,7 +46,20 @@ class FileLock implements Lock
 
         $this->name = $lock_name;
         $this->file = "$config[install_dir]/.$lock_name.lock";
-        $this->handle = fopen($this->file, "w+");
+
+        /* If PHP is version 7.0.16+, 7.1.2+ or anything from 7.2 onwards,
+         * set the close-on-exec flag on the lock file FD, so that it
+         * does not leak to forked child processes, such as sendmail.
+         */
+        if (PHP_MAJOR_VERSION > 7 || PHP_MAJOR_VERSION == 7 && (
+            (PHP_MINOR_VERSION >= 2)
+            || (PHP_MINOR_VERSION == 1 && PHP_RELEASE_VERSION >= 2)
+            || (PHP_MINOR_VERSION == 0 && PHP_RELEASE_VERSION >= 16))
+        ) {
+            $this->handle = fopen($this->file, "we+");
+        } else {
+            $this->handle = fopen($this->file, "w+");
+        }
     }
 
     public function __destruct()
