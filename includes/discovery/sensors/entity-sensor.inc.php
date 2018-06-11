@@ -100,7 +100,7 @@ if (!empty($entity_oids)) {
                 $divisor = $divisor.str_pad('', $entry['entPhySensorPrecision'], '0');
             }
 
-            if ($device['os'] === 'arista_eos') {
+            if ($device['os'] === 'arista_eos' && $entry['entPhySensorPrecision'] == '0') {
                 if ($entry['entPhySensorScale'] == 'milli' && $entry['entPhySensorType'] == 'amperes') {
                     $divisor = '1';
                     $multiplier = '1';
