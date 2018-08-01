@@ -84,6 +84,7 @@ pages:
           - Extensions/metrics/InfluxDB.md
           - Extensions/metrics/OpenTSDB.md
           - Extensions/metrics/Prometheus.md
+          - Extensions/metrics/RESTfulDB.md
       - Extensions/Smokeping.md
       - Extensions/Weathermap.md
   - 7. API:
@@ -165,6 +166,7 @@ pages:
       - Extensions/InfluxDB.md
       - Extensions/Graphite.md
       - Extensions/OpenTSDB.md
+      - Extensions/RESTfulDB.md
       - Extensions/Prometheus.md
       - Extensions/RRDCached-Security.md
       - General/Contributing.md
