@@ -1,6 +1,7 @@
 <?php
 
-$hardware = snmp_get($device, "fusionInfoBoard", "-Ovq", "EXALINK-FUSION-MIB");
-$serial = snmp_get($device, "fusionInfoSerial", "-Ovq", "EXALINK-FUSION-MIB");
-$version = snmp_get($device, "fusionInfoVersion", "-Ovq", "EXALINK-FUSION-MIB") . " ";
-$version .= snmp_get($device, "fusionInfoSoftware", "-Ovq", "EXALINK-FUSION-MIB");
+$snmp_data = snmp_get_multi_oid($device, "fusionInfoBoard fusionInfoSerial fusionInfoVersion fusionInfoSoftware", "-OQs", "EXALINK-FUSION-MIB");
+
+$hardware = $snmp_data['fusionInfoBoard'];
+$serial = $snmp_data['fusionInfoSerial'];
+$version = $snmp_data['fusionInfoVersion'] . " " . $snmp_data['fusionInfoSoftware'];
