@@ -77,8 +77,10 @@ If you have issues with secure LDAP try setting `$config['auth_ad_check_certific
 
 ### Require actual membership of the configured groups
 
-If you set `$config['auth_ad_require_groupmembership']` to 1, the authenticated user has to be a member of the specific group.
-Otherwise all users can authenticate, and will be either level 0 or you may set `$config['auth_ad_global_read']` to 1 and all users will have read only access unless otherwise specified.
+If you set `$config['auth_ad_require_groupmembership']` to 1, an AD user must be a member of a specified group in order to successfully authenticate.
+Otherwise, all users can authenticate and will receive a default privilege level based upon the value of `$config['auth_ad_global_read']`. If this parameter is set to 1, all users will have global read only access (level 5) unless otherwise specified in `$config['auth_ad_groups']`. If `$config['auth_ad_global_read']` is unset or set to 0, all users will receive no explicit privileges (level 0) unless otherwise specified.
+
+The configuration option `$config['auth_ad_no_memberof']` allows operation of this module in environments where the `memberOf` attribute of users is inaccessible or otherwise unavailable. Setting this attribute to 1 or `true` resolves group membership and the user list by querying the target group(s) for their list of members, and then fetching the attributes for each member in a separate LDAP query. Therefore, it is not advised to use this if avoidable, since this will significantly increase the number of directory queries made.
 
 #### Old account cleanup
 Cleanup of old accounts is done by checking the authlog. You will need to set the number of days when old accounts will be purged AUTOMATICALLY by daily.sh.
