@@ -129,7 +129,9 @@ class LdapAuthorizer extends AuthorizerBase
 
             if ($entries['count']) {
                 $uid_attr = strtolower(Config::get('auth_ldap_uid_attribute', 'uidnumber'));
-                return $entries[0][$uid_attr][0];
+                if (array_key_exists($uid_attr, $entries[0])) {
+                    return $entries[0][$uid_attr][0];
+                }
             }
         } catch (AuthenticationException $e) {
             echo $e->getMessage() . PHP_EOL;
@@ -162,34 +164,76 @@ class LdapAuthorizer extends AuthorizerBase
                 $group_filter = "(|$group_filter)";
             }
 
-            // search using memberOf
-            $search = ldap_search($connection, trim(Config::get('auth_ldap_suffix'), ','), "(&$filter$group_filter)");
-            if (ldap_count_entries($connection, $search)) {
-                foreach (ldap_get_entries($connection, $search) as $entry) {
-                    $user = $this->ldapToUser($entry);
-                    $userlist[$user['username']] = $user;
-                }
-            } else {
-                // probably doesn't support memberOf, go through all users, this could be slow
-                $search = ldap_search($connection, trim(Config::get('auth_ldap_suffix'), ','), $filter);
-                foreach (ldap_get_entries($connection, $search) as $entry) {
-                    foreach ($ldap_groups as $ldap_group) {
-                        if (ldap_compare(
-                            $connection,
-                            $ldap_group,
-                            Config::get('auth_ldap_groupmemberattr', 'memberUid'),
-                            $this->getMembername($entry['uid'][0])
-                        )) {
-                            $user = $this->ldapToUser($entry);
-                            $userlist[$user['username']] = $user;
+            $username_attr = strtolower(Config::get('auth_ldap_attr.uid', 'uid'));
+            $uid_attr = strtolower(Config::get('auth_ldap_uid_attribute', 'uidnumber'));
+            $email_attr = Config::get('auth_ldap_emailattr', 'mail');
+
+            $search_strat = array('memberof', 'groupmembers', 'bruteforce');
+            foreach ($search_strat as $strat) {
+                switch ($strat) {
+                    case 'memberof':
+                        // search using memberOf
+                        $search = ldap_search($connection, trim(Config::get('auth_ldap_suffix'), ','), "(&$filter$group_filter)");
+                        if (ldap_count_entries($connection, $search)) {
+                            foreach (ldap_get_entries($connection, $search) as $entry) {
+                                $user = $this->ldapToUser($entry);
+                                $userlist[$user['username']] = $user;
+                            }
+                            //Terminate search
+                            break 2;
                         }
-                    }
+                        //Next search strategy
+                        break;
+                    case 'groupmembers':
+                        $success = false;
+                        // search by getting all users of all listed groups
+                        $ldap_group_filter = '';
+                        foreach ($ldap_groups as $group_dn) {
+                            $search = ldap_read($connection, $group_dn, $filter, array('member'));
+                            if (ldap_count_entries($connection, $search)) {
+                                $success = true;
+                                // get the group's members
+                                $members = ldap_get_entries($connection, $search)[0]['member'];
+                                foreach ($members as $id => $member) {
+                                    if ($id == 'count') {
+                                        continue;
+                                    }
+                                    $search = ldap_read($connection, $member, $filter, array('cn', $username_attr, $uid_attr, $email_attr));
+                                    $entry = ldap_get_entries($connection, $search)[0];
+                                    $user = $this->ldapToUser($entry);
+                                    $userlist[$user['username']] = $user;
+                                }
+                            }
+                        }
+                        if ($success) {
+                            // Stop searching if successful
+                            break 2;
+                        }
+                        break;
+                    case 'bruteforce':
+                            // Go through all users, this could be very slow
+                            $search = ldap_search($connection, trim(Config::get('auth_ldap_suffix'), ','), $filter);
+                        foreach (ldap_get_entries($connection, $search) as $entry) {
+                            foreach ($ldap_groups as $ldap_group) {
+                                if (ldap_compare(
+                                    $connection,
+                                    $ldap_group,
+                                    Config::get('auth_ldap_groupmemberattr', 'memberUid'),
+                                    $this->getMembername($entry[$username_attr][0])
+                                )
+                                ) {
+                                    $user = $this->ldapToUser($entry);
+                                    $userlist[$user['username']] = $user;
+                                }
+                            }
+                        }
+                            //Always terminate after bruteforce search
+                        break 2;
                 }
             }
         } catch (AuthenticationException $e) {
             echo $e->getMessage() . PHP_EOL;
         }
-
         return $userlist;
     }
 
@@ -215,7 +259,7 @@ class LdapAuthorizer extends AuthorizerBase
             try {
                 $connection = $this->getLdapConnection();
                 $filter = '(' . Config::get('auth_ldap_attr.uid') . '=' . $username . ')';
-                $search = ldap_search($connection, Config::get('auth_ldap_groupbase'), $filter);
+                $search = ldap_search($connection, Config::get('auth_ldap_suffix'), $filter);
                 $entries = ldap_get_entries($connection, $search);
                 return $entries[0]['dn'];
             } catch (AuthenticationException $e) {
@@ -245,6 +289,7 @@ class LdapAuthorizer extends AuthorizerBase
 
     /**
      * Get the full dn with auth_ldap_prefix and auth_ldap_suffix
+     *
      * @internal
      *
      * @return string
@@ -256,9 +301,10 @@ class LdapAuthorizer extends AuthorizerBase
 
     /**
      * Get the ldap connection. If it hasn't been established yet, connect and try to bind.
+     *
      * @internal
      *
-     * @param bool $skip_bind do not attempt to bind on connection
+     * @param  bool $skip_bind do not attempt to bind on connection
      * @return false|resource
      * @throws AuthenticationException
      */
@@ -341,13 +387,15 @@ class LdapAuthorizer extends AuthorizerBase
      */
     private function ldapToUser($entry)
     {
+        $username_attr = strtolower(Config::get('auth_ldap_attr.uid', 'uid'));
         $uid_attr = strtolower(Config::get('auth_ldap_uid_attribute', 'uidnumber'));
+        $email_attr = Config::get('auth_ldap_emailattr', 'mail');
         return [
-            'username' => $entry['uid'][0],
+            'username' => $entry[$username_attr][0],
             'realname' => $entry['cn'][0],
             'user_id' => $entry[$uid_attr][0],
-            'email' => $entry[Config::get('auth_ldap_emailattr', 'mail')][0],
-            'level' => $this->getUserlevel($entry['uid'][0]),
+            'email' => $entry[$email_attr][0],
+            'level' => $this->getUserlevel($entry[$username_attr][0]),
         ];
     }
 }

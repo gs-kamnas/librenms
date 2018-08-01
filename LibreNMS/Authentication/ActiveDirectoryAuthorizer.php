@@ -78,48 +78,67 @@ class ActiveDirectoryAuthorizer extends AuthorizerBase
 
     protected function userInGroup($username, $groupname)
     {
-        // check if user is member of the given group or nested groups
-
-
-        $search_filter = "(&(objectClass=group)(cn=$groupname))";
-
-        // get DN for auth_ad_group
-        $search = ldap_search(
-            $this->ldap_connection,
-            Config::get('auth_ad_base_dn'),
-            $search_filter,
-            array("cn")
-        );
-        $result = ldap_get_entries($this->ldap_connection, $search);
-
-        if ($result == false || $result['count'] !== 1) {
-            if (Config::get('auth_ad_debug', false)) {
-                if ($result == false) {
-                    // FIXME: what went wrong?
-                    throw new AuthenticationException("LDAP query failed for group '$groupname' using filter '$search_filter'");
-                } elseif ($result['count'] == 0) {
-                    throw new AuthenticationException("Failed to find group matching '$groupname' using filter '$search_filter'");
-                } elseif ($result['count'] > 1) {
-                    throw new AuthenticationException("Multiple groups returned for '$groupname' using filter '$search_filter'");
+        // check if user is member of the given group or nested groups (if memberOf is supported)
+        if (Config::get('auth_ad_no_memberof', false)) {
+            $user_dn = $this->getDn($username, true);
+            $search = ldap_search($this->ldap_connection, Config::get('auth_ad_base_dn'), static::groupFilter($groupname), array('member'));
+            if (ldap_count_entries($this->ldap_connection, $search) == 0) {
+                // group not found
+                return false;
+            }
+            // get the group's members
+            $members = ldap_get_entries($this->ldap_connection, $search)[0]['member'];
+            foreach ($members as $id => $member) {
+                if ($id == 'count') {
+                    continue;
+                } elseif (strcasecmp($user_dn, $member) == 0) {
+                    // user found in group
+                    return true;
                 }
             }
+            // user not found in group, fallthrough and return false
+        } else {
+            $search_filter = "(&(objectClass=group)(cn=$groupname))";
 
-            throw new AuthenticationException();
+            // get DN for auth_ad_group
+            $search = ldap_search(
+                $this->ldap_connection,
+                Config::get('auth_ad_base_dn'),
+                $search_filter,
+                array("cn")
+            );
+            $result = ldap_get_entries($this->ldap_connection, $search);
+
+            if ($result == false || $result['count'] !== 1) {
+                if (Config::get('auth_ad_debug', false)) {
+                    if ($result == false) {
+                        $errorstr = ldap_error($this->ldap_connection);
+                        throw new AuthenticationException("LDAP query failed for group '$groupname' using filter '$search_filter': $errorstr");
+                    } elseif ($result['count'] == 0) {
+                        throw new AuthenticationException("Failed to find group matching '$groupname' using filter '$search_filter'");
+                    } elseif ($result['count'] > 1) {
+                        throw new AuthenticationException("Multiple groups returned for '$groupname' using filter '$search_filter'");
+                    }
+                }
+
+                throw new AuthenticationException();
+            }
+
+            $group_dn = $result[0]["dn"];
+
+            $search = ldap_search(
+                $this->ldap_connection,
+                Config::get('auth_ad_base_dn'),
+                // add 'LDAP_MATCHING_RULE_IN_CHAIN to the user filter to search for $username in nested $group_dn
+                // limiting to "DN" for shorter array
+                "(&" . static::userFilter($username) . "(memberOf:1.2.840.113556.1.4.1941:=$group_dn))",
+                array("DN")
+            );
+            $entries = ldap_get_entries($this->ldap_connection, $search);
+
+            return ($entries["count"] > 0);
         }
-
-        $group_dn = $result[0]["dn"];
-
-        $search = ldap_search(
-            $this->ldap_connection,
-            Config::get('auth_ad_base_dn'),
-            // add 'LDAP_MATCHING_RULE_IN_CHAIN to the user filter to search for $username in nested $group_dn
-            // limiting to "DN" for shorter array
-            "(&" . static::userFilter($username) . "(memberOf:1.2.840.113556.1.4.1941:=$group_dn))",
-            array("DN")
-        );
-        $entries = ldap_get_entries($this->ldap_connection, $search);
-
-        return ($entries["count"] > 0);
+        return false;
     }
 
     public function userExists($username, $throw_exception = false)
@@ -241,17 +260,39 @@ class ActiveDirectoryAuthorizer extends AuthorizerBase
         $ldap_groups = $this->getGroupList();
 
         foreach ($ldap_groups as $ldap_group) {
-            $search_filter = "(&(memberOf:1.2.840.113556.1.4.1941:=$ldap_group)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))";
-            if (Config::get('auth_ad_user_filter')) {
-                $search_filter = "(&" . Config::get('auth_ad_user_filter') . $search_filter .")";
-            }
-            $attributes = array('samaccountname', 'displayname', 'objectsid', 'mail');
-            $search = ldap_search($this->ldap_connection, Config::get('auth_ad_base_dn'), $search_filter, $attributes);
-            $results = ldap_get_entries($this->ldap_connection, $search);
+            if (Config::get('auth_ad_no_memberof', false)) {
+                // memberof attribute not available
+                $search = ldap_read($this->ldap_connection, $ldap_group, '(objectclass=group)', array('member'));
+                if (ldap_count_entries($this->ldap_connection, $search) == 0) {
+                    continue;
+                }
+                // get the group's members
+                $members = ldap_get_entries($this->ldap_connection, $search)[0]['member'];
+                foreach ($members as $id => $member) {
+                    if ($id == 'count') {
+                        continue;
+                    } elseif (array_key_exists($member, $userlist) === false) {
+                        //user has not been seen before, so read the user's info from ldap
+                        $search = ldap_read($this->ldap_connection, $member, '(objectclass=user)', array('samaccountname','displayname','objectsid','mail'));
+                        $result = ldap_get_entries($this->ldap_connection, $search)[0];
+                        if (isset($result['samaccountname'][0])) {
+                            $userlist[$result['samaccountname'][0]] = $this->userFromAd($result);
+                        }
+                    }
+                }
+            } else {
+                $search_filter = "(&(memberOf:1.2.840.113556.1.4.1941:=$ldap_group)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))";
+                if (Config::get('auth_ad_user_filter')) {
+                    $search_filter = "(&" . Config::get('auth_ad_user_filter') . $search_filter .")";
+                }
+                $attributes = array('samaccountname', 'displayname', 'objectsid', 'mail');
+                $search = ldap_search($this->ldap_connection, Config::get('auth_ad_base_dn'), $search_filter, $attributes);
+                $results = ldap_get_entries($this->ldap_connection, $search);
 
-            foreach ($results as $result) {
-                if (isset($result['samaccountname'][0])) {
-                    $userlist[$result['samaccountname'][0]] = $this->userFromAd($result);
+                foreach ($results as $result) {
+                    if (isset($result['samaccountname'][0])) {
+                        $userlist[$result['samaccountname'][0]] = $this->userFromAd($result);
+                    }
                 }
             }
         }
@@ -262,9 +303,10 @@ class ActiveDirectoryAuthorizer extends AuthorizerBase
     /**
      * Generate a user array from an AD LDAP entry
      * Must have the attributes: objectsid, samaccountname, displayname, mail
+     *
      * @internal
      *
-     * @param $entry
+     * @param  $entry
      * @return array
      */
     protected function userFromAd($entry)
@@ -342,15 +384,21 @@ class ActiveDirectoryAuthorizer extends AuthorizerBase
         return $ldap_groups;
     }
 
-    protected function getDn($samaccountname)
+    protected function getDn($samaccountname, $user = false)
     {
         $this->bind(); // make sure we called bind
+
+        if ($user) {
+            $filter = static::userFilter($samaccountname);
+        } else {
+            $filter = static::groupFilter($samaccountname);
+        }
 
         $attributes = array('dn');
         $result = ldap_search(
             $this->ldap_connection,
             Config::get('auth_ad_base_dn'),
-            static::groupFilter($samaccountname),
+            $filter,
             $attributes
         );
         $entries = ldap_get_entries($this->ldap_connection, $result);
@@ -385,10 +433,11 @@ class ActiveDirectoryAuthorizer extends AuthorizerBase
 
     /**
      * Bind to AD with the bind user if available, otherwise anonymous bind
+     *
      * @internal
      *
-     * @param bool $allow_anonymous attempt anonymous bind if bind user isn't available
-     * @param bool $force force rebind
+     * @param  bool $allow_anonymous attempt anonymous bind if bind user isn't available
+     * @param  bool $force           force rebind
      * @return bool success or failure
      */
     protected function bind($allow_anonymous = true, $force = false)
@@ -441,8 +490,9 @@ class ActiveDirectoryAuthorizer extends AuthorizerBase
             throw new AuthenticationException("PHP does not support LDAP, please install or enable the PHP LDAP extension.");
         }
 
-        if (Config::has('auth_ad_check_certificates') &&
-            !Config::get('auth_ad_check_certificates')) {
+        if (Config::has('auth_ad_check_certificates')
+            && !Config::get('auth_ad_check_certificates')
+        ) {
             putenv('LDAPTLS_REQCERT=never');
         };
 
