@@ -20,7 +20,8 @@
 
 function restfuldb_config_get($item, $default = null)
 {
-    if (array_key_exists($config['restfuldb'], $item)) {
+    global $config;
+    if (array_key_exists($item, $config['restfuldb'])) {
         return $config['restfuldb'][$item];
     } else {
         return $default;
